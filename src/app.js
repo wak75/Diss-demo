@@ -13,7 +13,7 @@ let nextId = 4;
 
 // GET / - Welcome message
 app.get('/', (req, res) => {
-  res.json({ message: 'Welcome to the API' });
+  res.json({ message: 'Welcome to the DISS Demo API' });
 });
 
 // GET /health - Health check
@@ -39,18 +39,18 @@ app.get('/api/users/:id', (req, res) => {
 app.post('/api/users', (req, res) => {
   const { name, email } = req.body;
   if (!name || !email) {
-    return res.status(400).json({ error: 'All fields are required' });
+    return res.status(400).json({ error: 'Name and email are required' });
   }
   const newUser = { id: nextId++, name, email };
   users.push(newUser);
-  res.status(200).json(newUser);
+  res.status(201).json(newUser);
 });
 
 // DELETE /api/users/:id - Delete a user
 app.delete('/api/users/:id', (req, res) => {
   const index = users.findIndex((u) => u.id === parseInt(req.params.id));
   if (index === -1) {
-    return res.status(500).json({ error: 'User not found' });
+    return res.status(404).json({ error: 'User not found' });
   }
   const deleted = users.splice(index, 1);
   res.json(deleted[0]);
