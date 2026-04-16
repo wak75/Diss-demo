@@ -2,9 +2,8 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USERNAME = 'your-dockerhub-username'  // TODO: Replace with your Docker Hub username
-        IMAGE_NAME = "${DOCKERHUB_USERNAME}/diss-demo"
         IMAGE_TAG = "${BUILD_NUMBER}"
+        APP_NAME = 'diss-demo'
         DOCKERHUB_CREDENTIALS = 'dockerhub-credentials' // Jenkins credentials ID for Docker Hub
     }
 
@@ -23,7 +22,15 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} -t ${IMAGE_NAME}:latest ."
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        docker build -t \${DOCKER_USER}/${APP_NAME}:${IMAGE_TAG} -t \${DOCKER_USER}/${APP_NAME}:latest .
+                    """
+                }
             }
         }
 
@@ -36,8 +43,8 @@ pipeline {
                 )]) {
                     sh '''
                         echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push ${IMAGE_NAME}:${IMAGE_TAG}
-                        docker push ${IMAGE_NAME}:latest
+                        docker push "$DOCKER_USER"/${APP_NAME}:${IMAGE_TAG}
+                        docker push "$DOCKER_USER"/${APP_NAME}:latest
                         docker logout
                     '''
                 }
@@ -47,12 +54,18 @@ pipeline {
 
     post {
         always {
-            // Clean up Docker images to save disk space
-            sh "docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true"
-            sh "docker rmi ${IMAGE_NAME}:latest || true"
+            withCredentials([usernamePassword(
+                credentialsId: 'dockerhub-credentials',
+                usernameVariable: 'DOCKER_USER',
+                passwordVariable: 'DOCKER_PASS'
+            )]) {
+                // Clean up Docker images to save disk space
+                sh "docker rmi \${DOCKER_USER}/${APP_NAME}:${IMAGE_TAG} || true"
+                sh "docker rmi \${DOCKER_USER}/${APP_NAME}:latest || true"
+            }
         }
         success {
-            echo "Pipeline completed successfully! Image pushed as ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "Pipeline completed successfully! Image pushed with tag ${IMAGE_TAG}"
         }
         failure {
             echo 'Pipeline failed!'
