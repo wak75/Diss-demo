@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    tools {
+        nodejs 'nodejs'
+    }
+
     environment {
         IMAGE_TAG = "${BUILD_NUMBER}"
         APP_NAME = 'diss-demo'
@@ -59,7 +63,6 @@ pipeline {
                 usernameVariable: 'DOCKER_USER',
                 passwordVariable: 'DOCKER_PASS'
             )]) {
-                // Clean up Docker images to save disk space
                 sh "docker rmi \${DOCKER_USER}/${APP_NAME}:${IMAGE_TAG} || true"
                 sh "docker rmi \${DOCKER_USER}/${APP_NAME}:latest || true"
             }
