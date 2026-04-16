@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    parameters {
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to build')
+    }
+
     tools {
         nodejs 'nodejs'
     }
@@ -12,6 +16,12 @@ pipeline {
     }
 
     stages {
+        stage('Checkout') {
+            steps {
+                git branch: "${params.BRANCH_NAME}", url: 'https://github.com/wak75/Diss-demo.git'
+            }
+        }
+
         stage('Install Dependencies') {
             steps {
                 sh 'npm ci'
