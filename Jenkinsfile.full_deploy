@@ -1,0 +1,220 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Branch to build')
+    }
+
+    tools {
+        nodejs 'nodejs'
+    }
+
+    environment {
+        IMAGE_TAG        = "${BUILD_NUMBER}"
+        APP_NAME         = 'diss-demo'
+        DOCKERHUB_CREDENTIALS = 'dockerhub-credentials'
+        DOCKER_USER      = 'was24'
+        K8S_NAMESPACE    = 'default'
+        NODE_PORT        = '30080'
+        CONTAINER_PORT   = '3000'
+    }
+
+    stages {
+
+        // ── 1. SOURCE ────────────────────────────────────────────────────────
+        stage('Checkout') {
+            steps {
+                git branch: "${params.BRANCH_NAME}",
+                    url: 'https://github.com/wak75/Diss-demo.git'
+            }
+        }
+
+        // ── 2. DEPENDENCIES ──────────────────────────────────────────────────
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm ci'
+            }
+        }
+
+        // ── 3. TEST ──────────────────────────────────────────────────────────
+        stage('Run Tests') {
+            steps {
+                sh 'npm test'
+            }
+        }
+
+        // ── 4. COMPILE / BUILD ────────────────────────────────────────────────
+        // Node.js has no compile step by default; run npm run build if the
+        // project defines one (e.g. TypeScript / Webpack). Fails gracefully.
+        stage('Compile / Build') {
+            steps {
+                sh 'npm run build --if-present'
+            }
+        }
+
+        // ── 5. DOCKER BUILD ───────────────────────────────────────────────────
+        stage('Build Docker Image') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USER_VAR',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        docker build \\
+                            -t \${DOCKER_USER_VAR}/${APP_NAME}:${IMAGE_TAG} \\
+                            -t \${DOCKER_USER_VAR}/${APP_NAME}:latest .
+                    """
+                }
+            }
+        }
+
+        // ── 6. DOCKER PUSH ────────────────────────────────────────────────────
+        stage('Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USER_VAR',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh '''
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER_VAR" --password-stdin
+                        docker push "$DOCKER_USER_VAR"/${APP_NAME}:${IMAGE_TAG}
+                        docker push "$DOCKER_USER_VAR"/${APP_NAME}:latest
+                        docker logout
+                    '''
+                }
+            }
+        }
+
+        // ── 7. GENERATE K8s MANIFESTS ─────────────────────────────────────────
+        stage('Generate Kubernetes Manifests') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                    usernameVariable: 'DOCKER_USER_VAR',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh """
+                        mkdir -p k8s
+
+                        # ── Deployment ────────────────────────────────────────
+                        cat > k8s/deployment.yaml <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${APP_NAME}
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${APP_NAME}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ${APP_NAME}
+  template:
+    metadata:
+      labels:
+        app: ${APP_NAME}
+    spec:
+      containers:
+        - name: ${APP_NAME}
+          image: \${DOCKER_USER_VAR}/${APP_NAME}:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - containerPort: ${CONTAINER_PORT}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: ${CONTAINER_PORT}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: ${CONTAINER_PORT}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+EOF
+
+                        # ── Service ───────────────────────────────────────────
+                        cat > k8s/service.yaml <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${APP_NAME}-service
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: ${APP_NAME}
+spec:
+  type: NodePort
+  selector:
+    app: ${APP_NAME}
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: ${CONTAINER_PORT}
+      nodePort: ${NODE_PORT}
+EOF
+
+                        echo "✅ Manifests generated:"
+                        cat k8s/deployment.yaml
+                        echo "---"
+                        cat k8s/service.yaml
+                    """
+                }
+            }
+        }
+
+        // ── 8. DEPLOY TO LOCALHOST (kubectl apply) ────────────────────────────
+        stage('Deploy to Kubernetes (localhost)') {
+            steps {
+                sh """
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl apply -f k8s/service.yaml
+
+                    echo "⏳ Waiting for rollout to complete..."
+                    kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
+
+                    echo ""
+                    echo "═══════════════════════════════════════════════"
+                    echo "✅ Deployment complete!"
+                    echo "   App : ${APP_NAME}"
+                    echo "   Tag : ${IMAGE_TAG}"
+                    echo "   URL : http://localhost:${NODE_PORT}"
+                    echo "═══════════════════════════════════════════════"
+                    kubectl get pods -n ${K8S_NAMESPACE} -l app=${APP_NAME}
+                    kubectl get svc  -n ${K8S_NAMESPACE} ${APP_NAME}-service
+                """
+            }
+        }
+    }
+
+    // ── POST ACTIONS ──────────────────────────────────────────────────────────
+    post {
+        always {
+            withCredentials([usernamePassword(
+                credentialsId: "${DOCKERHUB_CREDENTIALS}",
+                usernameVariable: 'DOCKER_USER_VAR',
+                passwordVariable: 'DOCKER_PASS'
+            )]) {
+                sh "docker rmi \${DOCKER_USER_VAR}/${APP_NAME}:${IMAGE_TAG} || true"
+                sh "docker rmi \${DOCKER_USER_VAR}/${APP_NAME}:latest        || true"
+            }
+        }
+        success {
+            echo "🎉 full_deploy pipeline succeeded! Image: ${DOCKER_USER}/${APP_NAME}:${IMAGE_TAG} | URL: http://localhost:${NODE_PORT}"
+        }
+        failure {
+            echo '❌ full_deploy pipeline failed!'
+        }
+    }
+}
